@@ -997,21 +997,248 @@ function closeEditor(){
   else document.getElementById('title-screen').classList.add('show');
 }
 
+// ─── UPLOAD & BROWSE LEVELS ──────────────────────────────────
+let uploaderId='', browseCurrentLevelId='';
+
+function getOrCreateUploaderId(){
+  if(!uploaderId){
+    const saved=localStorage.getItem('trun_uploader_id');
+    if(saved) uploaderId=saved;
+    else{
+      const chars='abcdefghijklmnopqrstuvwxyz0123456789';
+      let id='user_';
+      for(let i=0;i<12;i++) id+=chars[Math.floor(Math.random()*chars.length)];
+      uploaderId=id;
+      localStorage.setItem('trun_uploader_id',uploaderId);
+    }
+  }
+  return uploaderId;
+}
+
+function uploadLevel(){
+  if(edObjects.length===0){ alert('Cannot upload empty level'); return; }
+  const name=prompt('Level name:',currentEditorLevelName||'My Level');
+  if(!name) return;
+  const trimmed=name.trim();
+  if(trimmed.length===0) return;
+  if(trimmed.length>100){ alert('Level name too long (max 100 chars)'); return; }
+  
+  const button=document.querySelector('.etbtn.blue');
+  button.disabled=true;
+  button.textContent='⬆ UPLOADING...';
+  
+  const uid=getOrCreateUploaderId();
+  const payload={name:trimmed,objects:edObjects,uploaderId:uid};
+  
+  fetch('/api/levels/upload',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})
+    .then(r=>r.json())
+    .then(d=>{
+      if(d.success){
+        alert(`✓ Level uploaded! ID: ${d.id}`);
+        currentEditorLevelName=trimmed;
+      } else alert('Upload failed: '+(d.error||'Unknown error'));
+      button.disabled=false;
+      button.textContent='⬆ UPLOAD';
+    })
+    .catch(e=>{
+      alert('Upload error: '+e.message);
+      button.disabled=false;
+      button.textContent='⬆ UPLOAD';
+    });
+}
+
+function openBrowseLevels(){
+  hideAll();
+  document.getElementById('browselevels-screen').classList.add('show');
+  fetchBrowseLevels();
+}
+
+function closeBrowseLevels(){
+  hideAll();
+  document.getElementById('title-screen').classList.add('show');
+}
+
+function fetchBrowseLevels(){
+  const grid=document.getElementById('bl-grid');
+  const loading=document.getElementById('bl-loading');
+  grid.innerHTML='';
+  loading.style.display='block';
+  
+  fetch('/api/levels/recent?limit=20')
+    .then(r=>r.json())
+    .then(d=>{
+      loading.style.display='none';
+      if(d.levels.length===0){
+        grid.innerHTML='<p style="grid-column:1/-1;color:#445;text-align:center;">No levels yet!</p>';
+        return;
+      }
+      d.levels.forEach(l=>{
+        const card=document.createElement('div');
+        card.className='bl-card';
+        const date=new Date(l.uploadedAt).toLocaleDateString();
+        card.innerHTML=`
+          <div class="bl-card-name">${l.name}</div>
+          <div class="bl-card-uploader">${l.uploaderId}</div>
+          <div class="bl-card-date">${date}</div>
+          <div class="bl-card-downloads">📥 ${l.downloads}</div>
+        `;
+        card.addEventListener('click',()=>previewLevel(l.id));
+        grid.appendChild(card);
+      });
+    })
+    .catch(e=>{
+      loading.style.display='none';
+      grid.innerHTML='<p style="grid-column:1/-1;color:#f44;text-align:center;">Failed to load levels</p>';
+      console.error('Browse error:',e);
+    });
+}
+
+function previewLevel(levelId){
+  browseCurrentLevelId=levelId;
+  const modal=document.getElementById('levelpreview-modal');
+  const loading=document.getElementById('bl-loading');
+  loading.style.display='block';
+  
+  fetch(`/api/levels/${levelId}`)
+    .then(r=>r.json())
+    .then(level=>{
+      loading.style.display='none';
+      document.getElementById('preview-level-name').textContent=level.name;
+      const date=new Date(level.uploadedAt).toLocaleDateString();
+      document.getElementById('preview-level-info').textContent=`By ${level.uploaderId} • ${date} • ${level.downloads} downloads`;
+      
+      // Check if user can delete
+      const uid=getOrCreateUploaderId();
+      const delBtn=document.getElementById('preview-delete-btn');
+      delBtn.style.display=uid===level.uploaderId?'block':'none';
+      
+      // Draw preview
+      drawLevelPreview(level.objects);
+      modal.style.display='flex';
+    })
+    .catch(e=>{
+      loading.style.display='none';
+      alert('Failed to load level: '+e.message);
+    });
+}
+
+function drawLevelPreview(objects){
+  const cv=document.getElementById('preview-canvas');
+  const ctx=cv.getContext('2d');
+  ctx.fillStyle='#01447a'; ctx.fillRect(0,0,cv.width,cv.height);
+  ctx.fillStyle='#008cff'; ctx.fillRect(0,0,cv.width,cv.height-68);
+  ctx.strokeStyle='#fff'; ctx.lineWidth=2;
+  ctx.beginPath(); ctx.moveTo(0,cv.height-68); ctx.lineTo(cv.width,cv.height-68); ctx.stroke();
+  
+  objects.forEach(o=>{
+    if(!o||!o.type) return;
+    if(o.type==='spike'){
+      const rot=(o.rotation||0)*Math.PI/2;
+      ctx.save(); ctx.translate(o.x+o.w/2,o.y+o.h/2); ctx.rotate(rot);
+      ctx.fillStyle='#000'; ctx.beginPath(); ctx.moveTo(-o.w/2,o.h/2); ctx.lineTo(0,-o.h/2); ctx.lineTo(o.w/2,o.h/2); ctx.closePath(); ctx.fill();
+      ctx.restore();
+    } else if(o.type==='block'){
+      ctx.fillStyle='#666'; ctx.fillRect(o.x,o.y,o.w,o.h);
+      ctx.fillStyle='#aaa'; ctx.fillRect(o.x,o.y,o.w,3);
+    } else if(o.type==='slab'){
+      ctx.fillStyle='#445566'; ctx.fillRect(o.x,o.y,o.w,o.h);
+    } else if(o.type==='orb'){
+      ctx.beginPath(); ctx.arc(o.x+o.w/2,o.y+o.h/2,o.w/2,0,Math.PI*2); ctx.fillStyle='#ffdd00'; ctx.fill();
+    } else if(o.type==='jumppad'){
+      ctx.fillStyle='#ffaa00'; ctx.fillRect(o.x,o.y,o.w,o.h);
+    } else if(o.type==='portal'){
+      ctx.strokeStyle=o.toMode==='ship'?'#aa44ff':'#44ffaa'; ctx.lineWidth=2; ctx.strokeRect(o.x,o.y,o.w,o.h);
+    } else if(o.type==='deco'){
+      ctx.fillStyle=o.color||'#1a1a3a'; ctx.fillRect(o.x,o.y,o.w,o.h);
+    } else if(o.type==='deco-black'){
+      ctx.fillStyle='#000'; ctx.fillRect(o.x,o.y,o.w,o.h);
+    } else if(o.type==='end'){
+      ctx.fillStyle='rgba(0,255,136,0.12)'; ctx.fillRect(o.x,0,o.w,cv.height);
+      ctx.strokeStyle='#0f8'; ctx.lineWidth=2; ctx.beginPath(); ctx.moveTo(o.x,0); ctx.lineTo(o.x,cv.height); ctx.stroke();
+    }
+  });
+}
+
+function closeLevelPreview(){
+  document.getElementById('levelpreview-modal').style.display='none';
+}
+
+function loadBrowsedLevel(){
+  if(!browseCurrentLevelId) return;
+  fetch(`/api/levels/${browseCurrentLevelId}`)
+    .then(r=>r.json())
+    .then(level=>{
+      edObjects=JSON.parse(JSON.stringify(level.objects));
+      currentEditorLevelName=level.name;
+      updateEdCount(); drawEditor();
+      closeLevelPreview();
+      closeBrowseLevels();
+    })
+    .catch(e=>alert('Failed to load level: '+e.message));
+}
+
+function playBrowsedLevel(){
+  if(!browseCurrentLevelId) return;
+  fetch(`/api/levels/${browseCurrentLevelId}`)
+    .then(r=>r.json())
+    .then(level=>{
+      customLevelObjects=level.objects;
+      levelObjects=JSON.parse(JSON.stringify(customLevelObjects));
+      if(!levelObjects.find(o=>o.type==='end')){
+        const maxX=levelObjects.length?Math.max(...levelObjects.map(o=>o.x)):500;
+        levelObjects.push({type:'end',x:maxX+400,y:GROUND-200,w:10,h:200});
+      }
+      currentLevelId='browsed_'+browseCurrentLevelId;
+      best=0; attempts=0;
+      hideAll(); closeLevelPreview(); closeBrowseLevels();
+      saveGame(); _beginPlay();
+    })
+    .catch(e=>alert('Failed to load level: '+e.message));
+}
+
+function deleteCurrentBrowsedLevel(){
+  if(!browseCurrentLevelId) return;
+  if(!confirm('Delete this level? This cannot be undone.')) return;
+  
+  const delBtn=document.getElementById('preview-delete-btn');
+  delBtn.disabled=true;
+  delBtn.textContent='DELETING...';
+  
+  const uid=getOrCreateUploaderId();
+  fetch(`/api/levels/${browseCurrentLevelId}`,{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({uploaderId:uid})})
+    .then(r=>r.json())
+    .then(d=>{
+      if(d.success){
+        alert('✓ Level deleted');
+        closeLevelPreview();
+        fetchBrowseLevels();
+      } else alert('Delete failed: '+(d.error||'Unknown error'));
+      delBtn.disabled=false;
+      delBtn.textContent='DELETE';
+    })
+    .catch(e=>{
+      alert('Delete error: '+e.message);
+      delBtn.disabled=false;
+      delBtn.textContent='DELETE';
+    });
+}
+
 // ─── TITLE / LEVEL-SELECT STARS ──────────────────────────────
 const tsCanvas=document.getElementById('title-stars'), tsCtx=tsCanvas.getContext('2d');
 const lsCanvas=document.getElementById('ls-stars'),   lsCtx=lsCanvas.getContext('2d');
+const blCanvas=document.getElementById('bl-stars'),   blCtx=blCanvas.getContext('2d');
 const STARS=Array.from({length:100},()=>({
   x:Math.random()*2000, y:Math.random()*800,
   vx:(Math.random()-.5)*.3, vy:(Math.random()-.5)*.1,
   r:Math.random()*2+.5
 }));
-function resizeStarCanvases(){ tsCanvas.width=lsCanvas.width=window.innerWidth; tsCanvas.height=lsCanvas.height=window.innerHeight; }
+function resizeStarCanvases(){ tsCanvas.width=lsCanvas.width=blCanvas.width=window.innerWidth; tsCanvas.height=lsCanvas.height=blCanvas.height=window.innerHeight; }
 resizeStarCanvases();
 window.addEventListener('resize', resizeStarCanvases);
 
 const t0=Date.now();
 // Bug fix: animateLsStars() was called in openLevelSelect() but never defined.
-// This single loop already handles both canvases, so no extra call is needed.
+// This single loop already handles all canvases, so no extra call is needed.
 function animateStars(){
   const t=(Date.now()-t0)*.001;
   STARS.forEach(s=>{
@@ -1027,6 +1254,11 @@ function animateStars(){
     lsCtx.clearRect(0,0,lsCanvas.width,lsCanvas.height);
     STARS.forEach(s=>{ lsCtx.globalAlpha=.35+.35*Math.sin(t+s.y*.01); lsCtx.fillStyle='#fff'; lsCtx.beginPath(); lsCtx.arc(s.x,s.y,s.r,0,Math.PI*2); lsCtx.fill(); });
     lsCtx.globalAlpha=1;
+  }
+  if(document.getElementById('browselevels-screen').classList.contains('show')){
+    blCtx.clearRect(0,0,blCanvas.width,blCanvas.height);
+    STARS.forEach(s=>{ blCtx.globalAlpha=.35+.35*Math.sin(t+s.y*.01); blCtx.fillStyle='#fff'; blCtx.beginPath(); blCtx.arc(s.x,s.y,s.r,0,Math.PI*2); blCtx.fill(); });
+    blCtx.globalAlpha=1;
   }
   requestAnimationFrame(animateStars);
 }
